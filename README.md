@@ -139,6 +139,86 @@ move by hand). It contains four TODOs, which are the subject of Ex5.
 
 ---
 
+### Architecture diagram
+
+The core system separates the collateral token, the stablecoin ledger, and the vault that connects deposits with minting and redemption.
+
+```mermaid
+flowchart LR
+    subgraph Actors["Actors"]
+        direction TB
+        User["User"]
+        Admin["Administrator"]
+    end
+
+    subgraph Core["Core contracts"]
+        direction TB
+        USDC["MockUSDC<br/>mUSDC · 6 decimals"]
+        Vault["Vault<br/>Deposit / redeem loop"]
+        Stable["SimpleStablecoin<br/>sUSD · 6 decimals"]
+    end
+
+    Invariant["Core invariant<br/>Vault mUSDC balance ≥ sUSD total supply"]
+
+    User -->|"faucet() and approve(Vault)"| USDC
+    User -->|"deposit(amount) / redeem(amount)"| Vault
+
+    Vault -->|"transferFrom / transfer mUSDC"| USDC
+    Vault -->|"mint / burn via MINTER_ROLE"| Stable
+
+    Stable -->|"credit or remove sUSD balance"| User
+    Vault -->|"return mUSDC after redemption"| User
+
+    Admin -->|"grant / revoke roles"| Stable
+    Admin -->|"pause / unpause"| Stable
+
+    Vault -.-> Invariant
+    Stable -.-> Invariant
+```
+
+The deployment script creates `MockUSDC`, `SimpleStablecoin`, and `Vault`, then grants `MINTER_ROLE` to the vault.
+
+During a deposit, the user first obtains test mUSDC through `faucet()` and approves the vault to spend it. The user then calls `deposit(amount)`. The vault transfers the approved mUSDC from the user and mints the same number of sUSD units to the user.
+
+During redemption, the user calls `redeem(amount)`. The vault burns the user’s sUSD through its `MINTER_ROLE` and returns the same amount of mUSDC. The system remains fully backed while the vault’s mUSDC balance is at least the total sUSD supply.
+
+The over-collateralized exercise extends the core system with price-based borrowing and liquidation:
+
+```mermaid
+flowchart LR
+    subgraph Participants["Participants"]
+        direction TB
+        Borrower["Borrower"]
+        Liquidator["Liquidator"]
+    end
+
+    subgraph Extended["Exercise contracts"]
+        direction TB
+        WETH["MockWETH<br/>18 decimals"]
+        Feed["MockPriceFeed<br/>8 decimals"]
+        OCV["OverCollateralizedVault"]
+        SUSD["SimpleStablecoin<br/>6 decimals"]
+    end
+
+    Rules["Risk rules<br/>Mint ratio ≥ 150%<br/>Liquidation ratio &lt; 120%<br/>Liquidation bonus = 10%, capped"]
+
+    Borrower -->|"approve and deposit mWETH"| OCV
+    Borrower -->|"mint / repay / redeem collateral"| OCV
+
+    OCV -->|"transferFrom / transfer mWETH"| WETH
+    Feed -->|"current collateral price"| OCV
+    OCV -->|"mint / burn sUSD via MINTER_ROLE"| SUSD
+    SUSD -->|"sUSD balance"| Borrower
+
+    Liquidator -->|"burn sUSD to repay unhealthy debt"| OCV
+    OCV -->|"seized mWETH plus capped bonus"| Liquidator
+
+    OCV -.-> Rules
+    Feed -.-> Rules
+```
+
+`OverCollateralizedVault` converts the 18-decimal mWETH amount and the 8-decimal price into a 6-decimal sUSD value. Borrowing is allowed only when the resulting collateral ratio is at least 150%. If the ratio falls below 120%, a liquidator can burn sUSD to clear the unhealthy debt and receive collateral with a 10% bonus, capped by the collateral that remains available.
+
 ## 4. Homework
 
 ### Tier 1 (required) — Ex0–Ex6 in `EXERCISES.md`
@@ -184,6 +264,20 @@ forge verify-contract <address> src/SimpleStablecoin.sol:SimpleStablecoin \
 which is already listed in `.gitignore` — **committing a private key scores zero**.
 
 Sepolia test ETH: <https://cloud.google.com/application/web3/faucet/ethereum/sepolia>
+
+#### Deployment (Sepolia)
+
+The contracts were deployed to Ethereum Sepolia (Chain ID `11155111`) using the deployment script. The Vault was granted `MINTER_ROLE` on `SimpleStablecoin`, and all three contracts have verified source code on Etherscan.
+
+Deployer / admin: [`0xD554C1025451Da2cF86f0b26722390B098c986A1`](https://sepolia.etherscan.io/address/0xD554C1025451Da2cF86f0b26722390B098c986A1)
+
+| Contract | Sepolia address | Etherscan |
+|---|---|---|
+| `MockUSDC` | `0xcd05119E666DEb53E952Fd8A7E8FE193108C6a9e` | [View verified contract](https://sepolia.etherscan.io/address/0xcd05119E666DEb53E952Fd8A7E8FE193108C6a9e#code) |
+| `SimpleStablecoin` | `0x7934685699c54E5B5dd6F9c5766D88926A466F28` | [View verified contract](https://sepolia.etherscan.io/address/0x7934685699c54E5B5dd6F9c5766D88926A466F28#code) |
+| `Vault` | `0xAcfE974E6ceA0a9a12Ad7afAF66e11Efa2d03c9a` | [View verified contract](https://sepolia.etherscan.io/address/0xAcfE974E6ceA0a9a12Ad7afAF66e11Efa2d03c9a#code) |
+
+On-chain checks confirmed that all three addresses contain deployed bytecode and that the Vault holds `MINTER_ROLE`.
 
 ### Tier 3 (challenge, optional)
 

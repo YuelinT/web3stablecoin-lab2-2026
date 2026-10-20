@@ -7,7 +7,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {SimpleStablecoin} from "../SimpleStablecoin.sol";
 import {IPriceFeed} from "./IPriceFeed.sol";
 
-/// @title Over-collateralized vault (Ex5) — four TODOs are waiting for you
+/// @title Over-collateralized vault (Ex5)
 /// @notice Unlike the 1:1 loop in Vault.sol, $1 of collateral deposited here mints at most
 ///         0.667 sUSD (a 150% collateral ratio). Once the collateral ratio falls below
 ///         120%, anyone can take that collateral at a discount by paying sUSD — that is
@@ -104,50 +104,103 @@ contract OverCollateralizedVault {
     }
 
     // ==================================================================
-    // TODO Ex5.1 — decimal conversion
+    // Ex5.1 — decimal conversion
     // ==================================================================
 
     /// @notice Convert `amount` units of collateral (18 decimals) into sUSD smallest units
     ///         (6 decimals)
-    /// @dev The product carries 18 + 8 = 26 decimals and you want 6 — divide by 10 to the
-    ///      what?
+    /// @dev Multiplying 18-decimal collateral by an 8-decimal price produces 26 decimals.
+    ///      Dividing by 1e20 normalizes the result to the stablecoin's 6-decimal base units.
     function collateralValue(uint256 amount) public view returns (uint256) {
-        revert("TODO Ex5.1: collateralValue");
+        return amount * collateralPrice() / 1e20;
     }
 
     // ==================================================================
-    // TODO Ex5.2 — minting has to leave enough collateral behind
+    // Ex5.2 — minting has to leave enough collateral behind
     // ==================================================================
 
     /// @notice Mint `amount` of sUSD, but the collateral ratio afterwards must not fall
     ///         below MIN_COLLATERAL_RATIO
-    /// @dev Record the debt first and check second, so that collateralRatio() is looking
-    ///      at the post-mint state
+    /// @dev Record the debt first and check second, so collateralRatio() evaluates the
+    ///      post-mint position. A revert rolls the tentative debt update back atomically.
     function mintStable(uint256 amount) external {
-        revert("TODO Ex5.2: mintStable");
+        if (amount == 0) revert ZeroAmount();
+
+        // Check the position that would exist after minting, not its healthier pre-mint state.
+        debtOf[msg.sender] += amount;
+
+        if (collateralRatio(msg.sender) < MIN_COLLATERAL_RATIO) {
+            revert Undercollateralized();
+        }
+
+        // Interact with the token only after all local accounting checks have passed.
+        stable.mint(msg.sender, amount);
+
+        emit StableMinted(msg.sender, amount);
     }
 
     // ==================================================================
-    // TODO Ex5.3 — withdrawing collateral must not leave the position unhealthy either
+    // Ex5.3 — withdrawing collateral must not leave the position unhealthy either
     // ==================================================================
 
     /// @notice Withdraw `amount` units of collateral; the ratio afterwards must not fall
     ///         below MIN_COLLATERAL_RATIO
     function redeemCollateral(uint256 amount) external {
-        revert("TODO Ex5.3: redeemCollateral");
+        if (amount == 0) revert ZeroAmount();
+
+        if (amount > collateralOf[msg.sender]) {
+            revert InsufficientCollateral();
+        }
+
+        // Test the ratio after the proposed withdrawal; a revert restores this subtraction.
+        collateralOf[msg.sender] -= amount;
+
+        if (collateralRatio(msg.sender) < MIN_COLLATERAL_RATIO) {
+            revert Undercollateralized();
+        }
+
+        // Transfer last so external token code cannot run before accounting is finalized.
+        collateral.safeTransfer(msg.sender, amount);
+
+        emit CollateralRedeemed(msg.sender, amount);
     }
 
     // ==================================================================
-    // TODO Ex5.4 — liquidation
+    // Ex5.4 — liquidation
     // ==================================================================
 
     /// @notice Once the ratio falls below LIQUIDATION_RATIO, anyone may burn that user's
     ///         entire sUSD debt and seize collateral worth
     ///         "debt value × (100% + LIQUIDATION_BONUS)".
-    /// @dev Do not forget: the collateral may not be enough to pay that bonus. In that case
-    ///      take everything the user has left — the shortfall is bad debt, and that is
-    ///      exactly where liquidation is most fragile.
+    /// @dev The collateral may not be enough to pay the bonus. Capping seizure at the
+    ///      available balance avoids an underflow and makes any remaining shortfall explicit
+    ///      as bad debt rather than pretending the liquidator can seize nonexistent assets.
     function liquidate(address user) external {
-        revert("TODO Ex5.4: liquidate");
+        if (collateralRatio(user) >= LIQUIDATION_RATIO) {
+            revert NotLiquidatable();
+        }
+
+        uint256 userDebt = debtOf[user];
+        uint256 availableCollateral = collateralOf[user];
+
+        // The bonus compensates third parties for restoring an unhealthy position.
+        uint256 debtValueWithBonus =
+            userDebt * (RATIO_PRECISION + LIQUIDATION_BONUS) / RATIO_PRECISION;
+
+        // Reverse collateralValue(): convert 6-decimal USD value back to 18-decimal collateral.
+        uint256 collateralToSeize = debtValueWithBonus * 1e20 / collateralPrice();
+
+        if (collateralToSeize > availableCollateral) {
+            collateralToSeize = availableCollateral;
+        }
+
+        // Finalize internal accounting before calling either external token contract.
+        debtOf[user] = 0;
+        collateralOf[user] = availableCollateral - collateralToSeize;
+
+        stable.burn(msg.sender, userDebt);
+        collateral.safeTransfer(msg.sender, collateralToSeize);
+
+        emit Liquidated(user, msg.sender, userDebt, collateralToSeize);
     }
 }
