@@ -239,6 +239,26 @@ flowchart LR
 > Tier 1 does **not** require deploying to a testnet — a local Anvil is enough.
 > The acceptance command for every exercise is `make exercise`; when you are done it should be all green.
 
+#### Exercise and test evidence
+
+**Ex3 — breaking the peg**
+
+After an attacker was granted `MINTER_ROLE`, the attacker minted unbacked sUSD. The screenshot below shows that `totalSupply()` greatly exceeds `totalCollateral()`, demonstrating that privileged minting can break the core backing invariant.
+
+![Ex3 result showing sUSD total supply exceeding vault collateral](./screenshot%20of%20Ex3.png)
+
+**Exercise test suite**
+
+All required exercise tests, including the fuzz and invariant tests, pass with `make exercise`.
+
+![All exercise tests passing](./evidence/make-exercise-passing.png)
+
+**Core test suite**
+
+All core stablecoin tests pass with `make test`.
+
+![All core tests passing](./evidence/make-test-passing.png)
+
 ### Tier 2 (bonus)
 
 Deploy to the Sepolia testnet and verify the source on Etherscan; submit the contract links.
